@@ -1,0 +1,15 @@
+services:
+  hr_app:
+    build:
+      context: .  
+      dockerfile: Dockerfile
+    environment:
+      - TZ=Asia/Bangkok
+    image: "mic/hr_app:1.0.0"
+    container_name: 'streamlit_hr'
+    privileged: true
+    volumes:
+      - ./.env:/app/.env
+    ports:
+      - '8501:8501'
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]

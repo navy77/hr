@@ -21,7 +21,7 @@ def get_data_firebase(collection):
     df = pd.DataFrame(data)
     return df
 
-def insert_data_firebase(collection,df,div):
+def insert_data_queue_firebase(collection,df,div):
     db = connect_firebase()
     for _, row in df.iterrows():
         data = row.to_dict()
@@ -29,6 +29,13 @@ def insert_data_firebase(collection,df,div):
         data["created_at"] = firestore.SERVER_TIMESTAMP
         db.collection(collection).add(data)
 
+def insert_data_employee_firebase(collection,df):
+    db = connect_firebase()
+    for _, row in df.iterrows():
+        data = row.to_dict()
+        data["created_at"] = firestore.SERVER_TIMESTAMP
+        db.collection(collection).add(data)
+        
 def calculate_score(select_major_list,gpa_list,select_gender_list,weight_score,select_no):
     df_source_employee = get_data_firebase("source_employee")
     weight_score = [int(x) for x in weight_score.split(",")] # convert to list
@@ -43,8 +50,12 @@ def calculate_score(select_major_list,gpa_list,select_gender_list,weight_score,s
     df_source_employee['total_score'] = df_source_employee['major_score']*weight_score[0] + df_source_employee['gpa_score'] * weight_score[1] + df_source_employee['gender_score'] * weight_score[2]
     # sort by total_score gpa_score
     df_source_employee = df_source_employee.sort_values(by=['total_score','gpa_score'],ascending=[False,False])
+
+    df_source_employee = df_source_employee[df_source_employee['total_score']>0]
+
     df_preview_employee = df_source_employee.head(select_no)
     df_preview_employee = df_preview_employee[['title','name','lastname','education_on_level','major','gpa','univesity','attach_file']]
+    
     df_preview_employee['select']=False
 
     cols = ["select"] + [col for col in df_preview_employee.columns if col != "select"]
@@ -54,16 +65,18 @@ def calculate_score(select_major_list,gpa_list,select_gender_list,weight_score,s
 def assign_queue(df):
     df = df.copy()
     div = st.session_state.div
-    insert_data_firebase("queue_interview",df,div)
+    insert_data_queue_firebase("queue_interview",df,div)
     
 def select_employee():
     st.subheader("SEARCH EMPLOYEE")
 
     st.subheader("1. Select education major", divider="gray")
     df_source_employee = get_data_firebase("source_employee")
+    df_major = df_source_employee.drop_duplicates(subset=['major'])
+
     # create major list
 
-    major_list = ["-- Select education major --"] + df_source_employee['major'].tolist()
+    major_list = ["-- Select education major --"] + df_major['major'].tolist()
 
     col1, col2, col3 = st.columns(3)
     
@@ -91,7 +104,7 @@ def select_employee():
     elif gender_man==False and gender_lady==True:
         select_gender_list=['ms']
     else:
-        select_gender_list=['ms','mr']
+        select_gender_list=[]
     
 
     col1, col2, col3 = st.columns(3)
@@ -151,9 +164,19 @@ def select_employee():
                     st.session_state.show_table = False
                     st.rerun()
 
-def database():
+def database(): 
     st.subheader("DATABASE")
-    st.write("database")
+    # show table   
+    df_source_employee = get_data_firebase("source_employee")
+    df =df_source_employee.copy()
+    df = df[['apply_position','title','name','lastname','work_experience','education_on_level','major','gpa','univesity','tel_no','email','attach_file','created_at']]
+    df = df.sort_values(by=['created_at'],ascending=[True])
+    st.data_editor(df, use_container_width=True, num_rows="fixed",hide_index=True,column_config={
+                                                "attach_file": st.column_config.LinkColumn(
+                                                    label="Website",      
+                                                    display_text=None 
+                                                )
+                                            })
 
 def schedule():
     st.subheader("SCHEDULE")
@@ -161,7 +184,7 @@ def schedule():
     df =df_queue_interview.copy()
 
     df = df[['div','title','name','lastname','education_on_level','major','gpa','univesity','attach_file','created_at']]
-    sorted
+    df = df.sort_values(by=['created_at','div'],ascending=[True,False])
     st.data_editor(df, use_container_width=True, num_rows="fixed",hide_index=True,column_config={
                                                 "attach_file": st.column_config.LinkColumn(
                                                     label="Website",      
@@ -171,7 +194,72 @@ def schedule():
 
 def admin():
     st.subheader("ADMIN")
-    
+    # upload file
+    st.subheader("Upload source employee by CSV", divider="gray")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+        upload_button = st.button("UPLOAD TO DATABASE",key='upload_button',use_container_width=False)
+
+    if uploaded_file is not None:
+        df = pd.read_csv(uploaded_file)
+        st.write("Preview of CSV:")
+        st.dataframe(df)
+
+    if upload_button:
+        insert_data_employee_firebase("source_employee",df)
+        st.success('SUCCESS UPLOADED', icon="✅")
+        time.sleep(1)
+        st.rerun()
+
+    # config weight score
+    st.subheader("CONFIG WEIGHT SCORE", divider="gray")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        major_weight = st.slider("Major weight score", 0, 100, 50)
+        gpa_weight = st.slider("Major weight score", 0, 100, 40)
+        gender_weight = st.slider("Major weight score", 0, 100, 10)
+        total_weight  = major_weight+gpa_weight+gender_weight
+
+        weight_button = st.button("UPDATE WEIGHT SCORE",key='weight_button',use_container_width=False)
+        if weight_button:
+            if total_weight==100:
+                total_weight_env = f"{major_weight},{gpa_weight},{gender_weight}"
+                os.environ["WEIGHT_SCORE"] = str(total_weight_env)
+                dotenv.set_key(dotenv_file,"WEIGHT_SCORE",os.environ["WEIGHT_SCORE"])
+                st.success('SUCCESS UPDATED', icon="✅")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error('TOTAL WEIGHT SCORE NOT EQUAL 100%', icon="❌")
+                time.sleep(1)
+
+    # config max select employee
+    st.subheader("CONFIG MAX SELECT EMPLOYEE", divider="gray")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        max_select_employee = st.slider("Maximum employee can select ", 1, 20, 10)
+        max_select_employee_button = st.button("UPDATE MAX SELECT EMPLOYEE",key='max_select_employee_button',use_container_width=False)
+        if max_select_employee_button:
+            os.environ["MAX_SELECT_NO"] = str(max_select_employee)
+            dotenv.set_key(dotenv_file,"MAX_SELECT_NO",os.environ["MAX_SELECT_NO"])
+            st.success('SUCCESS UPDATED', icon="✅")
+            time.sleep(1)
+            st.rerun()
+
+    # config max preview employee
+    st.subheader("CONFIG MAX PREVIEW EMPLOYEE", divider="gray")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        max_preview_employee = st.slider("Maximum employee can preview ", 1, 30, 10)
+        max_preview_employee_button = st.button("UPDATE MAX PREVIEW EMPLOYEE",key='max_preview_employee_button',use_container_width=False)
+        if max_preview_employee_button:
+            os.environ["PREVIEW_NO"] = str(max_preview_employee)
+            dotenv.set_key(dotenv_file,"PREVIEW_NO",os.environ["PREVIEW_NO"])
+            st.success('SUCCESS UPDATED', icon="✅")
+            time.sleep(1)
+            st.rerun()
+
 def check_password(password):
     df_div = get_data_firebase("div_user")
     df_div['div_pass'] = df_div['div_name']+df_div['password']
@@ -230,7 +318,7 @@ def main_layout():
             with tab1:
                 select_employee() #major gpa gender
             with tab2:
-                database() #apply_position,work_experience,title,name,lastname,education_on_level,univesity,major,gpa,tel_no,email,attach_file
+                database() 
             with tab3:
                 schedule()
             with tab4:
