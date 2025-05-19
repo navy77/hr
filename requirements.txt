@@ -2,5 +2,4 @@ python-dotenv>=1.0.0
 streamlit==1.45
 numpy>=1.26.4
 pandas>=2.1.0
-pymssql==2.2.10
-firebase-admin
+pymongo==4.13.0

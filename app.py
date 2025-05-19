@@ -1,43 +1,42 @@
 import streamlit as st
 import os
 import dotenv
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
+from pymongo import MongoClient
 import pandas as pd
 import time
+from datetime import datetime
 
-def connect_firebase():
-    if not firebase_admin._apps:
-        cred = credentials.Certificate('./serviceAccountKey.json')
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    return db
+def connect_db(user,password,host):
+    client = MongoClient(f"mongodb://{user}:{password}@{host}:27017/")
+    return client
 
-def get_data_firebase(collection):
-    db = connect_firebase()
-    docs = db.collection(collection).stream()
-    data = [doc.to_dict() for doc in docs]
+def get_data_db(database,collection):
+    client = connect_db(os.environ["MG_USERNAME"],os.environ["MG_PASSWORD"],os.environ["MG_HOST"])
+    db = client[database]
+    collection = db[collection]
+    data = list(collection.find())
     df = pd.DataFrame(data)
     return df
 
-def insert_data_queue_firebase(collection,df,div):
-    db = connect_firebase()
-    for _, row in df.iterrows():
-        data = row.to_dict()
-        data["div"] = div
-        data["created_at"] = firestore.SERVER_TIMESTAMP
-        db.collection(collection).add(data)
+def insert_data_queue(database,collection,df,div):
+    client = connect_db(os.environ["MG_USERNAME"],os.environ["MG_PASSWORD"],os.environ["MG_HOST"])
+    db = client[database]
+    collection = db[collection]
+    df['div'] = div
+    df['created_at'] = datetime.now()
+    data = df.to_dict(orient='records')
+    collection.insert_many(data)
 
-def insert_data_employee_firebase(collection,df):
-    db = connect_firebase()
-    for _, row in df.iterrows():
-        data = row.to_dict()
-        data["created_at"] = firestore.SERVER_TIMESTAMP
-        db.collection(collection).add(data)
+def insert_data_employee(database,collection,df):
+    client = connect_db(os.environ["MG_USERNAME"],os.environ["MG_PASSWORD"],os.environ["MG_HOST"])
+    db = client[database]
+    collection = db[collection]
+    df['created_at'] = datetime.now()
+    data = df.to_dict(orient='records')
+    collection.insert_many(data)
         
 def calculate_score(select_major_list,gpa_list,select_gender_list,weight_score,select_no):
-    df_source_employee = get_data_firebase("source_employee")
+    df_source_employee = get_data_db(os.environ["MG_DATABASE"],"source_employee")
     weight_score = [int(x) for x in weight_score.split(",")] # convert to list
     
     # clean select_major_list
@@ -54,7 +53,7 @@ def calculate_score(select_major_list,gpa_list,select_gender_list,weight_score,s
     df_source_employee = df_source_employee[df_source_employee['total_score']>0]
 
     df_preview_employee = df_source_employee.head(select_no)
-    df_preview_employee = df_preview_employee[['title','name','lastname','education_on_level','major','gpa','univesity','attach_file']]
+    df_preview_employee = df_preview_employee[['title','name','lastname','education_on_level','major','gpa','university','attach_file']]
     
     df_preview_employee['select']=False
 
@@ -65,84 +64,100 @@ def calculate_score(select_major_list,gpa_list,select_gender_list,weight_score,s
 def assign_queue(df):
     df = df.copy()
     div = st.session_state.div
-    insert_data_queue_firebase("queue_interview",df,div)
+    insert_data_queue(os.environ["MG_DATABASE"],"queue_interview",df,div)
     
 def select_employee():
     st.subheader("SEARCH EMPLOYEE")
 
-    st.subheader("1. Select education major", divider="gray")
-    df_source_employee = get_data_firebase("source_employee")
-    df_major = df_source_employee.drop_duplicates(subset=['major'])
-
-    # create major list
-
-    major_list = ["-- Select education major --"] + df_major['major'].tolist()
-
-    col1, col2, col3 = st.columns(3)
     
-    with col1:
-        major_select_1 = st.selectbox('major-1',major_list,key='major-1',placeholder='-')
-    with col2:
-        major_select_2 = st.selectbox('major-2',major_list,key='major-2')
-    with col3:
-        major_select_3 = st.selectbox('major-3',major_list,key='major-3')
+    df_source_employee = get_data_db(os.environ["MG_DATABASE"],"source_employee")
+    if not df_source_employee.empty:
+        st.subheader("1. Select education major", divider="gray")
+        df_major = df_source_employee.drop_duplicates(subset=['major'])
 
-    st.subheader("2. Select GPA", divider="gray")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        gpa_list = st.slider("Select GPA", 2.0, 4.0, (2.2, 3.5),key='gpa')
+        # create major list
 
-    st.subheader("3. Select gender", divider="gray")
-    gender_man = st.toggle("Man",key='gender_man')
-    gender_lady = st.toggle("Lady",key='gender_lady')
-    gender_both = st.toggle("Both",key='gender_both')
+        major_list = ["-- Select education major --"] + df_major['major'].tolist()
 
-    if gender_both==True:
-        select_gender_list=['ms','mr']
-    elif gender_man==True and gender_lady==False:
-        select_gender_list=['mr']
-    elif gender_man==False and gender_lady==True:
-        select_gender_list=['ms']
-    else:
-        select_gender_list=[]
-    
-
-    col1, col2, col3 = st.columns(3)
-    with col2:
-        search_button = st.button(" 🔍 SEARCH ",key='search_button',use_container_width=True)
-
-    if "show_table" not in st.session_state:
-        st.session_state.show_table = False
-
-    if "df_preview_employee" not in st.session_state:
-        st.session_state.df_preview_employee = None
-
-    if search_button:
-        st.session_state.show_table = True
-        select_major_list = [major_select_1,major_select_2,major_select_3]
-
-        st.session_state.df_preview_employee = calculate_score(select_major_list,gpa_list,select_gender_list,os.environ["WEIGHT_SCORE"],int(os.environ["PREVIEW_NO"]))
-
-    if st.session_state.show_table and st.session_state.df_preview_employee is not None:
-        st.write("You can select maximum 10 persons")
-        df_preview_employee = st.data_editor(st.session_state.df_preview_employee, use_container_width=True, num_rows="fixed", key="editor",hide_index=True,
-                                             column_config={
-                                                "attach_file": st.column_config.LinkColumn(
-                                                    label="Website",      
-                                                    display_text=None 
-                                                )
-                                            })
+        col1, col2, col3 = st.columns(3)
         
+        with col1:
+            major_select_1 = st.selectbox('major-1',major_list,key='major-1',placeholder='-')
+        with col2:
+            major_select_2 = st.selectbox('major-2',major_list,key='major-2')
+        with col3:
+            major_select_3 = st.selectbox('major-3',major_list,key='major-3')
+
+        st.subheader("2. Select GPA", divider="gray")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            gpa_list = st.slider("Select GPA", 2.0, 4.0, (2.2, 3.5),key='gpa')
+
+        st.subheader("3. Select gender", divider="gray")
+        gender_man = st.toggle("Man",key='gender_man')
+        gender_lady = st.toggle("Lady",key='gender_lady')
+        gender_both = st.toggle("Both",key='gender_both')
+
+        if gender_both==True:
+            select_gender_list=['ms','mr']
+        elif gender_man==True and gender_lady==False:
+            select_gender_list=['mr']
+        elif gender_man==False and gender_lady==True:
+            select_gender_list=['ms']
+        else:
+            select_gender_list=[]
+        
+
         col1, col2, col3 = st.columns(3)
         with col2:
-            submit_button = st.button(" ✅ SUBMIT ",key='submit_button',use_container_width=True)
-            cancel_button = st.button(" ❌ CANCEL ",key='cancel_button',use_container_width=True)
-            if submit_button:
-                df_selected_employee = df_preview_employee[df_preview_employee["select"] == True].reset_index(drop=True)
-                if len(df_selected_employee) <= int(os.environ["MAX_SELECT_NO"]):
-                    # print(df_selected_employee)
-                    assign_queue(df_selected_employee)
-                    st.success('SUCCESS SELECTED', icon="✅")
+            search_button = st.button(" 🔍 SEARCH ",key='search_button',use_container_width=True)
+
+        if "show_table" not in st.session_state:
+            st.session_state.show_table = False
+
+        if "df_preview_employee" not in st.session_state:
+            st.session_state.df_preview_employee = None
+
+        if search_button:
+            st.session_state.show_table = True
+            select_major_list = [major_select_1,major_select_2,major_select_3]
+
+            st.session_state.df_preview_employee = calculate_score(select_major_list,gpa_list,select_gender_list,os.environ["WEIGHT_SCORE"],int(os.environ["PREVIEW_NO"]))
+
+        if st.session_state.show_table and st.session_state.df_preview_employee is not None:
+            st.write("You can select maximum 10 persons")
+            df_preview_employee = st.data_editor(st.session_state.df_preview_employee, use_container_width=True, num_rows="fixed", key="editor",hide_index=True,
+                                                column_config={
+                                                    "attach_file": st.column_config.LinkColumn(
+                                                        label="Website",      
+                                                        display_text=None 
+                                                    )
+                                                })
+            
+            col1, col2, col3 = st.columns(3)
+            with col2:
+                submit_button = st.button(" ✅ SUBMIT ",key='submit_button',use_container_width=True)
+                cancel_button = st.button(" ❌ CANCEL ",key='cancel_button',use_container_width=True)
+                if submit_button:
+                    df_selected_employee = df_preview_employee[df_preview_employee["select"] == True].reset_index(drop=True)
+                    if len(df_selected_employee) <= int(os.environ["MAX_SELECT_NO"]):
+                        # print(df_selected_employee)
+                        assign_queue(df_selected_employee)
+                        st.success('SUCCESS SELECTED', icon="✅")
+                        if st.session_state.role == "user":
+                            time.sleep(2)
+                            st.session_state.logged_in = False
+                            st.session_state.div = None
+                            st.session_state.df_preview_employee =False
+                            st.session_state.show_table = False
+                            st.rerun()
+                        
+                    else:
+                        st.error('SELECTED OVER LIMIT', icon="❌")
+                        time.sleep(2)
+                        st.rerun()
+                if cancel_button:
+                    st.error('NOT SELECT EMPLOYEE', icon="❌")
                     if st.session_state.role == "user":
                         time.sleep(2)
                         st.session_state.logged_in = False
@@ -150,47 +165,39 @@ def select_employee():
                         st.session_state.df_preview_employee =False
                         st.session_state.show_table = False
                         st.rerun()
-                else:
-                    st.error('SELECTED OVER LIMIT', icon="❌")
-                    time.sleep(2)
-                    st.rerun()
-            if cancel_button:
-                st.error('NOT SELECT EMPLOYEE', icon="❌")
-                if st.session_state.role == "user":
-                    time.sleep(2)
-                    st.session_state.logged_in = False
-                    st.session_state.div = None
-                    st.session_state.df_preview_employee =False
-                    st.session_state.show_table = False
-                    st.rerun()
+
 
 def database(): 
     st.subheader("DATABASE")
     # show table   
-    df_source_employee = get_data_firebase("source_employee")
+    df_source_employee = get_data_db(os.environ["MG_DATABASE"],"source_employee")
     df =df_source_employee.copy()
-    df = df[['apply_position','title','name','lastname','work_experience','education_on_level','major','gpa','univesity','tel_no','email','attach_file','created_at']]
-    df = df.sort_values(by=['created_at'],ascending=[True])
-    st.data_editor(df, use_container_width=True, num_rows="fixed",hide_index=True,column_config={
-                                                "attach_file": st.column_config.LinkColumn(
-                                                    label="Website",      
-                                                    display_text=None 
-                                                )
-                                            })
+    if not df.empty:
+        df = df[['apply_position','title','name','lastname','work_experience','education_on_level','major','gpa','university','tel_no','email','attach_file','created_at']]
+        df = df.sort_values(by=['created_at'],ascending=[True])
+        st.data_editor(df, use_container_width=True, num_rows="fixed",hide_index=True,column_config={
+                                                    "attach_file": st.column_config.LinkColumn(
+                                                        label="Website",      
+                                                        display_text=None 
+                                                    )
+                                                })
+    else:
+        st.write("no employee data")
 
 def schedule():
     st.subheader("SCHEDULE")
-    df_queue_interview = get_data_firebase("queue_interview")
+    df_queue_interview = get_data_db(os.environ["MG_DATABASE"],"queue_interview")
     df =df_queue_interview.copy()
-
-    df = df[['div','title','name','lastname','education_on_level','major','gpa','univesity','attach_file','created_at']]
-    df = df.sort_values(by=['created_at','div'],ascending=[True,False])
-    st.data_editor(df, use_container_width=True, num_rows="fixed",hide_index=True,column_config={
-                                                "attach_file": st.column_config.LinkColumn(
-                                                    label="Website",      
-                                                    display_text=None 
-                                                )
-                                            })
+    if not df.empty:
+        df = df[['div','title','name','lastname','education_on_level','major','gpa','university','attach_file','created_at']]
+        df = df.sort_values(by=['created_at','div'],ascending=[True,False])
+        st.data_editor(df, use_container_width=True, num_rows="fixed",hide_index=True,column_config={
+                                                    "attach_file": st.column_config.LinkColumn(
+                                                        label="Website",      
+                                                        display_text=None 
+                                                    )
+                                                })
+    else:st.write("no employee data")
 
 def admin():
     st.subheader("ADMIN")
@@ -207,7 +214,7 @@ def admin():
         st.dataframe(df)
 
     if upload_button:
-        insert_data_employee_firebase("source_employee",df)
+        insert_data_employee(os.environ["MG_DATABASE"],"source_employee",df)
         st.success('SUCCESS UPLOADED', icon="✅")
         time.sleep(1)
         st.rerun()
@@ -261,7 +268,7 @@ def admin():
             st.rerun()
 
 def check_password(password):
-    df_div = get_data_firebase("div_user")
+    df_div = get_data_db(os.environ["MG_DATABASE"],"div_user")
     df_div['div_pass'] = df_div['div_name']+df_div['password']
 
     result_check = df_div[df_div["div_pass"] == password]
